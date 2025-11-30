@@ -103,22 +103,39 @@ original_width, original_height = keras.utils.load_img(base_image_path).size
 img_height = 400
 img_width = round(original_width * img_height / original_height)
 
+#載入VGG19模型
 model = keras.applications.vgg19.VGG19(weights="imagenet", include_top=False)
 outputs_dict = dict([(layer.name, layer.output) for layer in model.layers])
+#建立特徵提取器模型
 feature_extractor = keras.Model(inputs=model.inputs, outputs=outputs_dict)
 
 base_image = preprocess_image(base_image_path)
 style_reference_image = preprocess_image(style_reference_image_path)
+#建立組合圖片
 combination_image = tf.Variable(preprocess_image(base_image_path))
 
-iterations = 4000
-for i in range(1, iterations + 1):
+iterations = 4000  # 設定訓練迭代次數
+for i in range(1, iterations + 1):  # 從第1次到第4000次迭代
+    # 計算損失函數和梯度
     loss, grads = compute_loss_and_grads(
-        combination_image, base_image, style_reference_image
+        combination_image,        # 組合圖像（要優化的目標）
+        base_image,              # 基礎圖像（內容圖像）
+        style_reference_image    # 風格參考圖像
     )
+
+    # 使用優化器根據梯度更新組合圖像
     optimizer.apply_gradients([(grads, combination_image)])
+
+    # 每100次迭代檢查一次進度
     if i % 100 == 0:
+        # 打印當前迭代次數和損失值
         print(f"Iteration {i}: loss={loss:.2f}")
+
+        # 將張量轉換回標準圖像格式
         img = deprocess_image(combination_image.numpy())
+
+        # 生成檔案名稱
         fname = f"combination_image_at_iteration_{i}.png"
+
+        # 將中間結果保存為PNG圖像檔案
         keras.utils.save_img(fname, img)
