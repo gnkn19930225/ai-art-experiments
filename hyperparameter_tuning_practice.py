@@ -3,7 +3,15 @@ from tensorflow.keras import layers
 import keras_tuner as kt
 import tensorflow as tf
 import numpy as np
-
+# pip install keras-tuner
+# pip install tensorflow
+# pip install numpy
+# pip install matplotlib
+# pip install pandas
+# pip install scikit-learn
+# pip install scipy
+# pip install statsmodels
+# pip install xgboost
 
 def build_model(hp):
     units = hp.Int(name="units", min_value=16, max_value=64, step=16)
@@ -71,8 +79,23 @@ tuner.search(
     verbose=2,
 )
 
+# 顯示所有搜尋結果的摘要
+print("\n" + "="*50)
+print("搜尋結果摘要:")
+print("="*50)
+tuner.results_summary()
+
 top_n = 4
 best_hps = tuner.get_best_hyperparameters(top_n)
+
+# 顯示前 N 組最佳參數
+print("\n" + "="*50)
+print(f"前 {top_n} 組最佳參數:")
+print("="*50)
+for i, hp in enumerate(best_hps):
+    print(f"\n第 {i+1} 組:")
+    print(f"  units: {hp.get('units')}")
+    print(f"  optimizer: {hp.get('optimizer')}")
 
 
 def get_best_epoch(hp):
@@ -105,10 +128,25 @@ def get_best_trained_model(hp):
 best_models = []
 for hp in best_hps:
     model = get_best_trained_model(hp)
-    model.evaluate(x_test, y_test)
+    print(f"\n評估模型 - units: {hp.get('units')}, optimizer: {hp.get('optimizer')}")
+    test_loss, test_acc = model.evaluate(x_test, y_test)
+    print(f"  測試準確率: {test_acc:.4f}")
     best_models.append(model)
 
 best_models = tuner.get_best_models(top_n)
+
+# 顯示最終最佳模型
+print("\n" + "="*50)
+print("最佳模型:")
+print("="*50)
+best_hp = tuner.get_best_hyperparameters(1)[0]
+print(f"  units: {best_hp.get('units')}")
+print(f"  optimizer: {best_hp.get('optimizer')}")
+print("\n最佳模型測試結果:")
+test_loss, test_acc = best_models[0].evaluate(x_test, y_test)
+print(f"  測試損失: {test_loss:.4f}")
+print(f"  測試準確率: {test_acc:.4f}")
+print("="*50)
 
 np_array = np.zeros((2, 2))
 tf_tensor = tf.convert_to_tensor(np_array)
