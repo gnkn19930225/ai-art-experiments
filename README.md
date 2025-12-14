@@ -10,6 +10,11 @@
   - [核心架構](#核心架構)
   - [Sampler 詳解](#sampler-詳解)
   - [完整流程](#完整流程)
+- [超參數調優 (Hyperparameter Tuning)](#超參數調優-hyperparameter-tuning)
+  - [什麼是超參數調優](#什麼是超參數調優)
+  - [KerasTuner 使用方式](#kerastuner-使用方式)
+  - [貝葉斯優化詳解](#貝葉斯優化詳解)
+  - [完整執行流程](#完整執行流程)
 
 ---
 
@@ -343,3 +348,252 @@ kl_loss = -0.5 * sum(1 + log_var - μ² - exp(log_var))
 - 學習的是一個**分布**而不是單一值
 - 可以生成多樣化的結果
 - 潛在空間更平滑、更連續
+
+---
+
+## 超參數調優 (Hyperparameter Tuning)
+
+### 什麼是超參數調優
+
+**超參數 (Hyperparameters)** 是訓練前需要設定的參數，無法從訓練數據中學習：
+- 神經網絡層數、每層神經元數量
+- 學習率、批次大小
+- 優化器選擇 (Adam, RMSprop, SGD)
+- 正則化參數、Dropout 比例
+
+**超參數調優** 就是找出這些參數的最佳組合，讓模型表現最好。
+
+---
+
+### KerasTuner 使用方式
+
+KerasTuner 是 Keras 的超參數調優工具，自動化地搜索最佳超參數組合。
+
+#### 1. 定義可調整的模型
+
+```python
+def build_model(hp):
+    # hp.Int(): 整數範圍的超參數
+    units = hp.Int(name="units", min_value=16, max_value=64, step=16)
+    # 可能值: [16, 32, 48, 64]
+
+    model = keras.Sequential([
+        layers.Dense(units, activation="relu"),
+        layers.Dense(10, activation="softmax")
+    ])
+
+    # hp.Choice(): 離散選項的超參數
+    optimizer = hp.Choice(name="optimizer", values=["rmsprop", "adam"])
+    # 可能值: ["rmsprop", "adam"]
+
+    model.compile(
+        optimizer=optimizer,
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"])
+    return model
+```
+
+#### 2. 建立 Tuner
+
+```python
+import keras_tuner as kt
+
+tuner = kt.BayesianOptimization(
+    build_model,                      # 模型建構函式
+    objective="val_accuracy",         # 優化目標：最大化驗證準確率
+    max_trials=100,                   # 最多嘗試 100 組超參數
+    executions_per_trial=2,           # 每組超參數訓練 2 次取平均
+    directory="mnist_kt_test",        # 結果保存目錄
+    overwrite=True,                   # 覆蓋舊結果
+)
+```
+
+#### 3. 執行搜索
+
+```python
+tuner.search(
+    x_train, y_train,
+    batch_size=128,
+    epochs=100,
+    validation_data=(x_val, y_val),
+    callbacks=[keras.callbacks.EarlyStopping(monitor="val_loss", patience=5)],
+    verbose=2,
+)
+```
+
+**`tuner.search()` 會自動：**
+1. 選擇超參數組合（使用貝葉斯優化策略）
+2. 用這組超參數建立模型
+3. 訓練模型（最多 100 epochs，但 EarlyStopping 可能提前停止）
+4. 在驗證集上評估 `val_accuracy`
+5. 重複步驟 1-4，最多執行 100 次（`max_trials=100`）
+6. 每組超參數會訓練 2 次（`executions_per_trial=2`），取平均結果來減少隨機性
+
+#### 4. 獲取最佳超參數
+
+```python
+# 獲取前 4 名的超參數配置
+best_hps = tuner.get_best_hyperparameters(top_n=4)
+
+# 或直接獲取訓練好的最佳模型
+best_models = tuner.get_best_models(top_n=4)
+```
+
+---
+
+### 貝葉斯優化詳解
+
+#### 什麼是貝葉斯優化？
+
+貝葉斯優化是一種**智能搜索策略**，用於在最少試驗次數內找到最佳超參數。
+
+#### 與其他方法的對比
+
+| 方法 | 策略 | 效率 | 優缺點 |
+|------|------|------|--------|
+| **網格搜索 (Grid Search)** | 窮舉所有組合 | 低 | ✅ 保證找到範圍內最優解<br>❌ 指數級時間複雜度 |
+| **隨機搜索 (Random Search)** | 隨機採樣 | 中 | ✅ 比網格搜索快<br>❌ 可能錯過最優解 |
+| **貝葉斯優化** | 智能選擇下一個嘗試 | 高 | ✅ 最高效，適合昂貴的評估<br>❌ 實現較複雜 |
+
+**例子：假設我們要調整 2 個超參數**
+- `units`: [16, 32, 48, 64]（4 個選項）
+- `optimizer`: ["rmsprop", "adam"]（2 個選項）
+- 總組合數：4 × 2 = 8 種
+
+**不同方法的試驗次數：**
+- 網格搜索：需要測試全部 8 組
+- 隨機搜索：隨機測試 5-6 組（可能錯過最優）
+- 貝葉斯優化：可能只需測試 3-4 組就找到最優
+
+#### 貝葉斯優化的工作原理
+
+**核心思想：** 從前面的試驗結果中學習，預測哪些超參數組合更有可能表現好。
+
+**執行流程：**
+
+```
+第 1 次試驗：隨機選一組超參數
+    ↓
+units=32, optimizer="adam" → val_accuracy=0.92
+    ↓
+建立「代理模型」(Surrogate Model)
+    （預測：units 越大 → 準確率越高）
+    ↓
+第 2 次試驗：根據代理模型預測，選擇最有希望的組合
+    ↓
+units=64, optimizer="adam" → val_accuracy=0.94
+    ↓
+更新代理模型
+    （預測修正：units=64 最好，optimizer="adam" 比 "rmsprop" 好）
+    ↓
+第 3 次試驗：在「探索」和「利用」間平衡
+    - 探索 (Exploration)：嘗試不確定但可能好的區域
+    - 利用 (Exploitation)：選擇目前已知最好的區域附近
+    ↓
+units=48, optimizer="rmsprop" → val_accuracy=0.91
+    ↓
+繼續更新代理模型，重複上述過程...
+```
+
+**關鍵機制：**
+
+1. **代理模型 (Surrogate Model)**
+   - 用簡單模型（如高斯過程）近似「超參數 → 性能」的複雜函數
+   - 每次試驗後更新，越來越準確
+
+2. **獲取函數 (Acquisition Function)**
+   - 決定下一個要試驗的超參數組合
+   - 常見的有：
+     - **EI (Expected Improvement)**：期望改進最大
+     - **UCB (Upper Confidence Bound)**：平衡探索與利用
+     - **PI (Probability of Improvement)**：改進機率最大
+
+3. **探索 vs 利用**
+   - **探索**：嘗試還沒試過的區域，避免陷入局部最優
+   - **利用**：專注在已知表現好的區域，快速收斂
+
+#### 簡單比喻
+
+想像你在一個陌生城市找最好吃的餐廳：
+
+- **網格搜索**：把城市分成格子，每個格子都去吃一遍（太累了！）
+- **隨機搜索**：隨機選幾家餐廳（可能錯過隱藏名店）
+- **貝葉斯優化**：
+  1. 先隨便試一家 → 3 顆星，在東區
+  2. 根據經驗推測：東區餐廳可能不錯
+  3. 在東區附近找下一家 → 4 顆星！
+  4. 繼續在附近找，但偶爾去西區探索（避免錯過西區的 5 星餐廳）
+  5. 幾次試驗後就找到最好的餐廳
+
+#### 為什麼貝葉斯優化適合深度學習？
+
+1. **訓練成本高**：訓練一次神經網絡可能要數小時甚至數天
+2. **試驗次數少**：預算有限（時間、計算資源）
+3. **黑箱優化**：無法直接計算梯度（超參數不可微分）
+4. **噪聲存在**：相同超參數每次訓練結果可能略有不同
+
+---
+
+### 完整執行流程
+
+#### 超參數搜索的完整過程
+
+```python
+# 1. 準備數據
+(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+x_train = x_train.reshape((-1, 28 * 28)).astype("float32") / 255
+x_test = x_test.reshape((-1, 28 * 28)).astype("float32") / 255
+
+# 分割訓練集和驗證集
+num_val_samples = 10000
+x_train, x_val = x_train[:-num_val_samples], x_train[-num_val_samples:]
+y_train, y_val = y_train[:-num_val_samples], y_train[-num_val_samples:]
+
+# 2. 執行超參數搜索（使用 x_train 和 x_val）
+tuner.search(x_train, y_train, validation_data=(x_val, y_val), ...)
+
+# 3. 獲取最佳超參數
+best_hps = tuner.get_best_hyperparameters(top_n=4)
+
+# 4. 用最佳超參數找最佳訓練輪數
+def get_best_epoch(hp):
+    model = build_model(hp)
+    history = model.fit(
+        x_train, y_train,
+        validation_data=(x_val, y_val),
+        epochs=100,
+        callbacks=[keras.callbacks.EarlyStopping(monitor="val_loss", patience=10)]
+    )
+    val_loss_per_epoch = history.history["val_loss"]
+    best_epoch = val_loss_per_epoch.index(min(val_loss_per_epoch)) + 1
+    return best_epoch
+
+# 5. 在完整訓練集上重新訓練（使用 x_train_full）
+def get_best_trained_model(hp):
+    best_epoch = get_best_epoch(hp)
+    model = build_model(hp)
+    # 訓練稍微久一點 (best_epoch * 1.2)，確保收斂
+    model.fit(x_train_full, y_train_full, epochs=int(best_epoch * 1.2))
+    return model
+
+# 6. 在測試集上評估最終模型
+best_models = []
+for hp in best_hps:
+    model = get_best_trained_model(hp)
+    model.evaluate(x_test, y_test)  # 最終評估在測試集上進行
+    best_models.append(model)
+```
+
+#### 數據集使用策略
+
+| 階段 | 使用數據 | 目的 |
+|------|----------|------|
+| **超參數搜索** | `x_train` + `x_val` | 找出最佳超參數組合 |
+| **找最佳 epoch** | `x_train` + `x_val` | 確定最佳訓練輪數 |
+| **最終訓練** | `x_train_full` (包含驗證集) | 用全部訓練數據訓練最終模型 |
+| **最終評估** | `x_test` | 評估模型真實性能 |
+
+**重點：**
+- ✅ 測試集只在最後評估時使用一次
+- ✅ 超參數搜索時不能用測試集，避免過擬合
+- ✅ 最終訓練時用全部訓練數據（包含驗證集），充分利用數據
